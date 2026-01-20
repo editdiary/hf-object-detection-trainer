@@ -1,0 +1,18 @@
+# 데이터셋 폴더 (용량이 크므로 제외)
+data/
+images/
+
+# 학습 결과 및 모델 가중치 (용량이 크므로 제외)
+runs/
+output/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# 파이썬 캐시 및 설정 파일
+__pycache__/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.env
