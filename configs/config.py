@@ -18,7 +18,7 @@ class Config:
     
     # 3. 학습 하이퍼파라미터 (TrainingArguments)
     BATCH_SIZE = 8
-    EPOCHS = 10
+    EPOCHS = 100
     OPTIM = "adamw_torch"   # 가능한 값: 'adamw_torch', 'sgd', 'adafactor' 등
     LEARNING_RATE = 1e-5
     WEIGHT_DECAY = 1e-4

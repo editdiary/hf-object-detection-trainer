@@ -1,7 +1,11 @@
-"""
-모듈들을 조립해서 학습을 실행합니다.
-코드가 훨씬 깔끔해집니다.
-"""
+import os
+import sys
+
+# --- [필수] 라이브러리 버그로 인한 시끄러운 경고 끄기 ---
+import warnings
+# timm 백본 로딩 시 발생하는 불필요한 경고를 무시합니다.
+warnings.filterwarnings("ignore", message=".*copying from a non-meta parameter.*")
+# -----------------------------------------------------
 
 import torch
 from transformers import TrainingArguments, Trainer, set_seed
@@ -10,20 +14,20 @@ from transformers import TrainingArguments, Trainer, set_seed
 from configs.config import Config
 from src.dataset import create_dataset
 from src.utils import get_collate_fn
-from src.model import load_model_and_processor
+from src.model import load_model, load_processor
 
 def main():
     # 1. 시드 설정 (재현성)
-    set_seed(Config.seed)
+    set_seed(Config.SEED)
 
     # 2. YAML 파일에서 데이터셋 정보 로드
     data_cfg = Config.load_data_config()
     print(f"Dataset Format: {data_cfg['format']}")
     
-    print(f"Loading Model: {Config.MODEL_CHECKPOINT}")
-    
+    print(f"Loading Processor: {Config.MODEL_CHECKPOINT}")
+
     # 3. 데이터셋 준비를 위해 Processor 먼저 로드 (Dataset 초기화용)
-    _, processor = load_model_and_processor(Config.MODEL_CHECKPOINT, {}, {})
+    processor = load_processor(Config.MODEL_CHECKPOINT)
 
     # 4. 데이터셋 생성 (Factory 함수 사용!)
     train_dataset = create_dataset(
@@ -41,13 +45,13 @@ def main():
     print(f"Data Loaded - Train: {len(train_dataset)}, Val: {len(eval_dataset)}")
     
     # 5. 모델 로드 (Label 정보 주입)
-    model, _ = load_model_and_processor(
+    print(f"Loading Model: {Config.MODEL_CHECKPOINT}")
+    model = load_model(
         Config.MODEL_CHECKPOINT, 
         train_dataset.id2label, 
         train_dataset.label2id
     )
 
-    # TODO 각 인자들의 의미와 무엇을 세팅할 수 있는지 정리할 것
     # 6. 학습 인자 설정
     training_args = TrainingArguments(
         # 기본 학습 설정 (Basic)
@@ -69,8 +73,8 @@ def main():
         # 저장 및 평가 전략 (Strategy)
         #save_steps=Config.SAVE_STEPS,
         #logging_steps=Config.LOGGING_STEPS,
-        evaluation_strategy="epoch", # 매 Epoch마다 검증
-        logging_startegy="epoch",
+        eval_strategy="epoch", # 매 Epoch마다 검증
+        logging_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=Config.SAVE_TOTAL_LIMIT,
         load_best_model_at_end=True,        # 성능이 가장 높으면 Best Model 따로 저장

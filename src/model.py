@@ -7,15 +7,18 @@
 #      (e.g., AutoModelForObjectDetection, AutoImageProcessor)
 from transformers import DetrForObjectDetection, DetrImageProcessor
 
-def load_model_and_processor(checkpoint, id2label, label2id):
-    # 1. Processor 로드
-    processor = DetrImageProcessor.from_pretrained(checkpoint)
-    
-    # 2. Model 로드
+# 프로세서만 가볍게 로드하는 함수 (데이터셋 초기화용)
+def load_processor(checkpoint):
+    return DetrImageProcessor.from_pretrained(checkpoint)
+
+# 모델 로드 함수 (학습용) - [수정됨] Processor 로딩 부분 제거
+def load_model(checkpoint, id2label, label2id):
     model = DetrForObjectDetection.from_pretrained(
         checkpoint,
         id2label=id2label,
         label2id=label2id,
-        ignore_mismatched_sizes=True
+        ignore_mismatched_sizes=True,
+        #low_cpu_mem_usage=False, # 경고 방지용 옵션 유지
+        #device_map=None
     )
-    return model, processor
+    return model
