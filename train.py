@@ -9,6 +9,7 @@ warnings.filterwarnings("ignore", message=".*copying from a non-meta parameter.*
 
 import torch
 from transformers import TrainingArguments, Trainer, set_seed
+import albumentations as A  # [Add] Albumentations 임포트
 
 # 우리가 만든 모듈 임포트
 from configs.config import Config
@@ -29,17 +30,22 @@ def main():
     # 3. 데이터셋 준비를 위해 Processor 먼저 로드 (Dataset 초기화용)
     processor = load_processor(Config.MODEL_CHECKPOINT)
 
+    # [Mod] config.py에서 정의한 증강 파이프라인
+    train_transform = Config.get_train_transforms()
+
     # 4. 데이터셋 생성 (Factory 함수 사용!)
     train_dataset = create_dataset(
         data_cfg=data_cfg, 
         split='train', 
-        processor=processor
+        processor=processor,
+        transform=train_transform # Train에만 증강 적용
     )
     
     eval_dataset = create_dataset(
         data_cfg=data_cfg, 
         split='val', 
-        processor=processor
+        processor=processor,
+        transform=None # 검증/평가할 때는 원본 그대로
     )
 
     print(f"Data Loaded - Train: {len(train_dataset)}, Val: {len(eval_dataset)}")

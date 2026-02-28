@@ -3,9 +3,6 @@
 커스텀 모델을 넣을 때 여기만 수정하면 됩니다.
 """
 
-# TODO 이것도 Detr가 아니라 Auto로 변경해서 수정해야 함
-#      (e.g., AutoModelForObjectDetection, AutoImageProcessor)
-#from transformers import DetrForObjectDetection, DetrImageProcessor
 from transformers import AutoModelForObjectDetection, AutoImageProcessor
 
 # 프로세서만 가볍게 로드하는 함수 (데이터셋 초기화용)

@@ -1,5 +1,6 @@
 import os
 import yaml
+import albumentations as A
 
 """
 모든 설정을 관리하는 파일입니다.
@@ -13,9 +14,9 @@ class Config:
     DATA_YAML_PATH = "/home/leedh/바탕화면/hf-object-detection-trainer/data/dataset_yolo_split/data.yaml"
     
     # 2. 모델 설정
-    MODEL_CHECKPOINT = "facebook/detr-resnet-50" # 나중에 다른 모델로 교체 가능
-    #MODEL_CHECKPOINT = "hustvl/yolos-tiny"
-    OUTPUT_DIR = "./runs/detr-chamoe-result"
+    #MODEL_CHECKPOINT = "facebook/detr-resnet-50" # 다른 모델로 교체 가능
+    MODEL_CHECKPOINT = "hustvl/yolos-tiny"
+    OUTPUT_DIR = "./runs/yolos-chamoe-result"
     
     # 3. 학습 하이퍼파라미터 (TrainingArguments)
     BATCH_SIZE = 8
@@ -31,6 +32,59 @@ class Config:
     LOGGING_STEPS = 10
     SAVE_TOTAL_LIMIT = 2
     SEED = 42
+
+    # =========================================================
+    # [추가] 데이터 증강(Augmentation) 파이프라인 통합 관리
+    # =========================================================
+    @staticmethod
+    def get_train_transforms():
+        """
+        다양한 Albumentations 증강 기법을 여기서 한 번에 관리합니다.
+        필요 없는 기법은 확률(p)을 0으로 하거나 주석 처리하면 됩니다.
+        """
+        return A.Compose([
+            # 1. 공간적 변환 (위치, 회전, 크기)
+            A.RandomResizedCrop(
+                size=(640, 640),      # 잘라낸 후 다시 맞출 크기 (모델 입력 크기에 맞춰 조절)
+                scale=(0.6, 1.0),     # 원본 이미지의 60% ~ 100% 면적을 랜덤하게 선택해서 자름
+                ratio=(0.75, 1.33),   # 가로세로 비율 유지 범위
+                p=0.3                 # 너무 자주 하면 배경 학습이 부족할 수 있으니 30% 정도 추천
+            ),
+            A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
+            A.Affine(       # 이동, 크기 조절, 회전을 동시에 적용
+                scale=(0.9, 1.1),             # 크기 조절
+                translate_percent=(-0.1, 0.1), # 상하좌우 이동
+                rotate=(-10, 10),             # 회전 정도
+                p=0.3                         # 적용 확률
+            ),
+
+            # 2. 색상 및 조명 변환 (야외 환경 모사)
+            A.RandomBrightnessContrast(
+                brightness_limit=0.2,   # 밝기 조절
+                contrast_limit=0.2,     # 대비 조절
+                p=0.3
+            ),
+            A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.2), # 그림자/강한 빛 디테일 살리기
+            A.RandomGamma(gamma_limit=(90, 110), p=0.2),           # 전체적인 빛 노출 조절
+            A.HueSaturationValue(
+                hue_shift_limit=5,      # 색조 조절 (색상 보존을 위해 조금만 수정)
+                sat_shift_limit=20,     # 채도(진하기) 조절 범위
+                val_shift_limit=15,     # 명도 조절 범위
+                p=0.5
+            ),
+
+            # 3. 화질 저하 및 가려짐 (노이즈, 흔들림, 장애물)
+            A.MotionBlur(blur_limit=5, p=0.2),                     # 움직임 흔들림
+            A.GaussNoise(std_range=(5.0 / 255, 15.0 / 255), p=0.1), # 약간의 노이즈 추가 (노이즈 범위 명시)
+            A.CoarseDropout(
+                num_holes_range=(2, 6), 
+                hole_height_range=(8, 24), 
+                hole_width_range=(8, 24), 
+                fill_value=0, 
+                p=0.2
+            ),
+            
+        ], bbox_params=A.BboxParams(format='coco', label_fields=['category_ids'], clip=True, min_visibility=0.2))
 
     # --- [New] YAML 로드 헬퍼 함수 ---
     @staticmethod

@@ -6,7 +6,7 @@ import os
 import glob
 from PIL import Image
 import xml.etree.ElementTree as ET
-
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -66,26 +66,36 @@ class CVATObjectDetectionDataset(Dataset):
         image_path = os.path.join(self.image_dir, item['file_name'])
         image = Image.open(image_path).convert("RGB")
 
-        # TODO 증강(Transform, albumentation) 적용 위치 (나중에 구현 시 여기에 추가)
-        
-        formatted_annotations = []
-        for box, label in zip(item['boxes'], item['class_labels']):
+        # TODO 증강(albumentation) 적용
+        image_np = np.array(image)  # (1) 이미지를 Numpy 배열로 변환
+
+        # (2) CVAT 박스(pascal_voc)를 미리 COCO 포맷([x_min, y_min, w, h])으로 통일
+        boxes = []
+        labels = item['class_labels']
+        for box in item['boxes']:
             x_min, y_min, x_max, y_max = box
-            width = x_max - x_min
-            height = y_max - y_min
-            
+            boxes.append([x_min, y_min, x_max-x_min, y_max-y_min])
+
+        # (3) Albumentation Transform 적용
+        if self.transform:
+            transformed = self.transform(image=image_np, bboxes=boxes, category_ids=labels)
+            image_np = transformed['image']
+            boxes = transformed['bboxes']
+            labels = transformed['category_ids']
+
+        # (4) Hugging Face 형식으로 패키징
+        formatted_annotations = []
+        for box, label in zip(boxes, labels):
+            x_min, y_min, w, h = box
             formatted_annotations.append({
-                "id": idx,
-                "image_id": idx,
-                "category_id": label,
-                "bbox": [x_min, y_min, width, height],
-                "area": width * height,
-                "iscrowd": 0
+                "id": idx, "image_id": idx, "category_id": label,
+                "bbox": [x_min, y_min, w, h], "area": w * h, "iscrowd": 0
             })
         
         target = {'image_id': idx, 'annotations': formatted_annotations}
 
-        encoding = self.processor(images=image, annotations=target, return_tensors="pt")
+        # [Mod] (5) Numpy 배열을 그대로 processor에 전달
+        encoding = self.processor(images=image_np, annotations=target, return_tensors="pt")
         pixel_values = encoding["pixel_values"].squeeze()
         target = encoding["labels"][0]
 
@@ -122,16 +132,9 @@ class YoloObjectDetectionDataset(Dataset):
         image_path = self.image_files[idx]
 
         # 1. 라벨 파일 경로 추론 (YOLO Style)
-        # 논리: 이미지 경로 중 'images' 부분을 'labels'로 바꾸고, 확장자를 .txt로 변경
-        # 예1: /data/train/images/01.jpg -> /data/train/labels/01.txt
-        # 예2: /data/images/train/01.jpg -> /data/labels/train/01.txt
-
-        # 확장자 변경 (.jpg -> .txt)
-        label_path = os.path.splitext(image_path)[0] + ".txt"
+        label_path = os.path.splitext(image_path)[0] + ".txt"   # 확장자 변경 (.jpg -> .txt)
 
         # 경로 치환 (images -> labels)
-        # os.sep ('/' 또는 '\')를 붙여서 파일명 등에 포함된 'images' 단어 오인식을 방지
-        # 예: 'images_01.jpg' 같은 파일명이 꼬이지 않게 함
         if f"{os.sep}images{os.sep}" in label_path:
             label_path = label_path.replace(f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}")
         elif "images" in label_path: # 구분자가 명확하지 않은 경우 단순 치환 (차선책)
@@ -141,8 +144,11 @@ class YoloObjectDetectionDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
         width_orig, height_orig = image.size
 
-        formatted_annotations = []
+        # [Mod] (1) 이미지를 Numpy 배열로 변환
+        image_np = np.array(image)
 
+        boxes = []
+        labels = []
         # 3. 라벨 파일 찾기 (이미지와 같은 이름의 .txt)        
         # 라벨 파일이 존재하면 읽기 (없으면 Negative Sample)
         if os.path.exists(label_path):
@@ -152,35 +158,40 @@ class YoloObjectDetectionDataset(Dataset):
             for line in lines:
                 parts = line.strip().split()
                 if len(parts) < 5: continue
-                    
                 class_id = int(parts[0])
                 
                 # YOLO Format: normalized center_x, center_y, w, h
                 cx, cy, w, h = map(float, parts[1:5])
                 
                 # Un-normalize (0~1 -> 절대 픽셀 좌표)
-                abs_cx = cx * width_orig
-                abs_cy = cy * height_orig
-                abs_w = w * width_orig
-                abs_h = h * height_orig
+                abs_w, abs_h = w * width_orig, h * height_orig
+                abs_cx, abs_cy = cx * width_orig, cy * height_orig
                 
                 # Hugging Face Processor(COCO)가 원하는 포맷: [x_min, y_min, w, h]
-                x_min = abs_cx - (abs_w / 2)
-                y_min = abs_cy - (abs_h / 2)
-                
-                formatted_annotations.append({
-                    "id": idx,
-                    "image_id": idx,
-                    "category_id": class_id,
-                    "bbox": [x_min, y_min, abs_w, abs_h], # COCO format
-                    "area": abs_w * abs_h,
-                    "iscrowd": 0
-                })
+                x_min, y_min = abs_cx - (abs_w / 2), abs_cy - (abs_h / 2)
+
+                boxes.append([x_min, y_min, abs_w, abs_h])
+                labels.append(class_id)
         
-        # 4. Processor 실행
+        # [Add] (2) Albumentations Transform 적용
+        if self.transform:
+            transformed = self.transform(image=image_np, bboxes=boxes, category_ids=labels)
+            image_np = transformed['image']
+            boxes = transformed['bboxes']
+            labels = transformed['category_ids']
+        
+        # (3) Hugging Face 형식으로 패키징
+        formatted_annotations = []
+        for box, label in zip(boxes, labels):
+            formatted_annotations.append({
+                "id": idx, "image_id": idx, "category_id": label,
+                "bbox": box, "area": box[2] * box[3], "iscrowd": 0
+            })
+        
         target = {'image_id': idx, 'annotations': formatted_annotations}
-        
-        encoding = self.processor(images=image, annotations=target, return_tensors="pt")
+
+        # [Mod] (4) Numpy 배열을 그대로 processor에 전달
+        encoding = self.processor(images=image_np, annotations=target, return_tensors="pt")
         pixel_values = encoding["pixel_values"].squeeze()
         target = encoding["labels"][0]
 
