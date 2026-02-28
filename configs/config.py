@@ -10,15 +10,16 @@ import yaml
 
 class Config:
     # 1. Data YAML 파일 경로 (이것만 바꾸면 데이터셋 교체 끝!)
-    DATA_YAML_PATH = "C:/Users/henho/OneDrive/Desktop/hf-object-detection-trainer/data/dataset_yolo_split/data.yaml"
+    DATA_YAML_PATH = "/home/leedh/바탕화면/hf-object-detection-trainer/data/dataset_yolo_split/data.yaml"
     
     # 2. 모델 설정
     MODEL_CHECKPOINT = "facebook/detr-resnet-50" # 나중에 다른 모델로 교체 가능
+    #MODEL_CHECKPOINT = "hustvl/yolos-tiny"
     OUTPUT_DIR = "./runs/detr-chamoe-result"
     
     # 3. 학습 하이퍼파라미터 (TrainingArguments)
     BATCH_SIZE = 8
-    EPOCHS = 100
+    EPOCHS = 1
     OPTIM = "adamw_torch"   # 가능한 값: 'adamw_torch', 'sgd', 'adafactor' 등
     LEARNING_RATE = 1e-5
     WEIGHT_DECAY = 1e-4

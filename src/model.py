@@ -5,20 +5,19 @@
 
 # TODO 이것도 Detr가 아니라 Auto로 변경해서 수정해야 함
 #      (e.g., AutoModelForObjectDetection, AutoImageProcessor)
-from transformers import DetrForObjectDetection, DetrImageProcessor
+#from transformers import DetrForObjectDetection, DetrImageProcessor
+from transformers import AutoModelForObjectDetection, AutoImageProcessor
 
 # 프로세서만 가볍게 로드하는 함수 (데이터셋 초기화용)
 def load_processor(checkpoint):
-    return DetrImageProcessor.from_pretrained(checkpoint)
+    return AutoImageProcessor.from_pretrained(checkpoint, use_fast=False)
 
 # 모델 로드 함수 (학습용) - [수정됨] Processor 로딩 부분 제거
 def load_model(checkpoint, id2label, label2id):
-    model = DetrForObjectDetection.from_pretrained(
+    model = AutoModelForObjectDetection.from_pretrained(
         checkpoint,
         id2label=id2label,
         label2id=label2id,
-        ignore_mismatched_sizes=True,
-        #low_cpu_mem_usage=False, # 경고 방지용 옵션 유지
-        #device_map=None
+        ignore_mismatched_sizes=True,   # 기존 가중치와 크기가 달라도 무시하고 새로 초기화
     )
     return model
