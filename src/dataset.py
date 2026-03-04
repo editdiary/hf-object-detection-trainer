@@ -66,7 +66,6 @@ class CVATObjectDetectionDataset(Dataset):
         image_path = os.path.join(self.image_dir, item['file_name'])
         image = Image.open(image_path).convert("RGB")
 
-        # TODO 증강(albumentation) 적용
         image_np = np.array(image)  # (1) 이미지를 Numpy 배열로 변환
 
         # (2) CVAT 박스(pascal_voc)를 미리 COCO 포맷([x_min, y_min, w, h])으로 통일

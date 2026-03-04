@@ -11,27 +11,63 @@ import albumentations as A
 
 class Config:
     # 1. Data YAML 파일 경로 (이것만 바꾸면 데이터셋 교체 끝!)
-    DATA_YAML_PATH = "/home/leedh/바탕화면/hf-object-detection-trainer/data/dataset_yolo_split/data.yaml"
+    DATA_YAML_PATH = os.path.join("data", "dataset_yolo_split", "data.yaml")
     
-    # 2. 모델 설정
+    # 2. 모델 및 실험 설정
     #MODEL_CHECKPOINT = "facebook/detr-resnet-50" # 다른 모델로 교체 가능
     MODEL_CHECKPOINT = "hustvl/yolos-tiny"
-    OUTPUT_DIR = "./runs/yolos-chamoe-result"
-    
+
+    # [Mod] 고정된 OUTPUT_DIR을 지우고 프로젝트와 실험 이름으로 분리
+    PROJECT_NAME = "yolos-chamoe-result"
+    EXPERIMENT_NAME = "real-train"
+    BASE_SAVE_DIR = "./runs" # 최상위 저장 폴더
+
     # 3. 학습 하이퍼파라미터 (TrainingArguments)
-    BATCH_SIZE = 8
-    EPOCHS = 1
+    BATCH_SIZE = 32
+    EPOCHS = 200
     OPTIM = "adamw_torch"   # 가능한 값: 'adamw_torch', 'sgd', 'adafactor' 등
-    LEARNING_RATE = 1e-5
+    LEARNING_RATE = 5e-5
     WEIGHT_DECAY = 1e-4
     LR_SCHEDULER_TYPE = "cosine"  # 가능한 값: 'linear', 'cosine', 'polynomial' 등
-    NUM_WORKERS = 8
+    NUM_WORKERS = 12
     
     # 4. 로깅 및 저장 설정
-    SAVE_STEPS = 50
-    LOGGING_STEPS = 10
-    SAVE_TOTAL_LIMIT = 2
+    #SAVE_STEPS = 50
+    LOGGING_STEPS = 50
+    SAVE_TOTAL_LIMIT = 1
     SEED = 42
+
+    # [추가] 조기 종료(Early Stopping) 설정
+    USE_EARLY_STOPPING = True       # 조기 종료 사용 여부
+    EARLY_STOP_PATIENCE = 40        # 성능 개선이 없을 때 기다릴 epoch 수
+    EARLY_STOP_THRESHOLD = 0.0      # 최소 개선 수치
+
+    # =========================================================
+    # [추가] 실험 폴더 자동 넘버링 생성기
+    # =========================================================
+    @classmethod
+    def get_output_dir(cls):
+        """
+        runs/PROJECT_NAME/EXPERIMENT_NAME1, 2, 3... 형태로 
+        중복되지 않는 새 폴더 경로를 찾아 반환하고 생성합니다.
+        """
+        # 예: ./runs/chamoe-detection
+        project_dir = os.path.join(cls.BASE_SAVE_DIR, cls.PROJECT_NAME)
+        os.makedirs(project_dir, exist_ok=True)
+        
+        counter = 1
+        while True:
+            # 예: yolos-training1
+            exp_dir_name = f"{cls.EXPERIMENT_NAME}{counter}"
+            full_path = os.path.join(project_dir, exp_dir_name)
+            
+            # 해당 폴더가 없으면 거기로 확정!
+            if not os.path.exists(full_path):
+                os.makedirs(full_path) # 폴더를 미리 생성해 둠
+                return full_path
+            
+            # 이미 있으면 번호를 1 올려서 다시 확인
+            counter += 1
 
     # =========================================================
     # [추가] 데이터 증강(Augmentation) 파이프라인 통합 관리
@@ -80,7 +116,7 @@ class Config:
                 num_holes_range=(2, 6), 
                 hole_height_range=(8, 24), 
                 hole_width_range=(8, 24), 
-                fill_value=0, 
+                fill=0, 
                 p=0.2
             ),
             

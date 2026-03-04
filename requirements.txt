@@ -4,3 +4,6 @@
 2. pytorch 2.7.1 (CUDA 11.8)로 설치
 3. pip install transformers datasets timm scipy matplotlib albumentations
 4. pip install "transformers[torch]"
+5. pip install torchmetrics
+6. pip install faster-coco-eval
+7. pip install pycocotools
