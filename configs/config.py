@@ -11,22 +11,23 @@ import albumentations as A
 
 class Config:
     # 1. Data YAML 파일 경로 (이것만 바꾸면 데이터셋 교체 끝!)
-    DATA_YAML_PATH = os.path.join("data", "dataset_yolo_split", "data.yaml")
+    DATA_YAML_PATH = os.path.join("data", "99_exp_dataset", "data.yaml")
     
     # 2. 모델 및 실험 설정
     #MODEL_CHECKPOINT = "facebook/detr-resnet-50" # 다른 모델로 교체 가능
-    MODEL_CHECKPOINT = "hustvl/yolos-tiny"
+    MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r18vd"
+    #MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r50vd"
 
     # [Mod] 고정된 OUTPUT_DIR을 지우고 프로젝트와 실험 이름으로 분리
-    PROJECT_NAME = "yolos-chamoe-result"
+    PROJECT_NAME = "rtdetr_v2_r18-chamoe"
     EXPERIMENT_NAME = "real-train"
     BASE_SAVE_DIR = "./runs" # 최상위 저장 폴더
 
     # 3. 학습 하이퍼파라미터 (TrainingArguments)
-    BATCH_SIZE = 32
+    BATCH_SIZE = 16
     EPOCHS = 200
     OPTIM = "adamw_torch"   # 가능한 값: 'adamw_torch', 'sgd', 'adafactor' 등
-    LEARNING_RATE = 5e-5
+    LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-4
     LR_SCHEDULER_TYPE = "cosine"  # 가능한 값: 'linear', 'cosine', 'polynomial' 등
     NUM_WORKERS = 12
@@ -82,7 +83,7 @@ class Config:
             # 1. 공간적 변환 (위치, 회전, 크기)
             A.RandomResizedCrop(
                 size=(640, 640),      # 잘라낸 후 다시 맞출 크기 (모델 입력 크기에 맞춰 조절)
-                scale=(0.6, 1.0),     # 원본 이미지의 60% ~ 100% 면적을 랜덤하게 선택해서 자름
+                scale=(0.7, 1.0),     # 원본 이미지의 60% ~ 100% 면적을 랜덤하게 선택해서 자름
                 ratio=(0.75, 1.33),   # 가로세로 비율 유지 범위
                 p=0.3                 # 너무 자주 하면 배경 학습이 부족할 수 있으니 30% 정도 추천
             ),
@@ -91,14 +92,14 @@ class Config:
                 scale=(0.9, 1.1),             # 크기 조절
                 translate_percent=(-0.1, 0.1), # 상하좌우 이동
                 rotate=(-10, 10),             # 회전 정도
-                p=0.3                         # 적용 확률
+                p=0.4                         # 적용 확률
             ),
 
             # 2. 색상 및 조명 변환 (야외 환경 모사)
             A.RandomBrightnessContrast(
-                brightness_limit=0.2,   # 밝기 조절
+                brightness_limit=0.3,   # 밝기 조절
                 contrast_limit=0.2,     # 대비 조절
-                p=0.3
+                p=0.4
             ),
             A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.2), # 그림자/강한 빛 디테일 살리기
             A.RandomGamma(gamma_limit=(90, 110), p=0.2),           # 전체적인 빛 노출 조절

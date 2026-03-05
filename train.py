@@ -8,14 +8,15 @@ warnings.filterwarnings("ignore", message=".*copying from a non-meta parameter.*
 # -----------------------------------------------------
 
 import torch
+from torch.utils.data import DataLoader
 from transformers import TrainingArguments, Trainer, set_seed, EarlyStoppingCallback
 import albumentations as A  # [Add] Albumentations 임포트
 
 # 우리가 만든 모듈 임포트
 from configs.config import Config
 from src.dataset import create_dataset
-from src.utils import get_collate_fn, MAPLoggingCallback, plot_training_results
 from src.model import load_model, load_processor
+from src.utils import get_collate_fn, MAPLoggingCallback, plot_training_results, generate_pr_curve, generate_confusion_matrix, visualize_inference_samples, visualize_training_samples
 
 def main():
     # 1. 시드 설정 (재현성)
@@ -68,7 +69,6 @@ def main():
     training_args = TrainingArguments(
         # 기본 학습 설정 (Basic)
         output_dir=current_output_dir,      # [Mod] 동적으로 생성된 경로 사용
-        logging_dir=f"{current_output_dir}/logs",   # [Mod] 텐서보드 로그도 같은 곳에
         per_device_train_batch_size=Config.BATCH_SIZE,
         per_device_eval_batch_size=Config.BATCH_SIZE,
         num_train_epochs=Config.EPOCHS,
@@ -86,8 +86,8 @@ def main():
 
         # 저장 및 평가 전략 (Strategy)
         eval_strategy="epoch", # 매 Epoch마다 검증
-        logging_strategy="steps", # [Mod] 실시간 확인을 위해 steps로 변경
-        logging_steps=Config.LOGGING_STEPS,
+        logging_strategy="epoch",
+        #logging_steps=Config.LOGGING_STEPS,
         save_strategy="epoch",
         save_total_limit=Config.SAVE_TOTAL_LIMIT,
         load_best_model_at_end=True,        # 성능이 가장 높으면 Best Model 따로 저장
@@ -127,17 +127,83 @@ def main():
         eval_dataset=eval_dataset,
         callbacks=callbacks    # [Add] 커스텀 콜백 연동
     )
+
+    # =========================================================
+    # [추가] 학습 시작 전, 증강된 데이터가 모델에게 어떻게 보이는지 확인!
+    # =========================================================
+    print("📸 학습 시작 전, 증강(Augmentation)이 적용된 Train 데이터 샘플을 시각화합니다...")
+    visualize_training_samples(
+        dataset=train_dataset,
+        processor=processor,
+        output_dir=current_output_dir,
+        id2label=train_dataset.id2label,
+        num_samples=4
+    )
     
-    # 8. 학습 시작
+    # 10. 학습 시작
     print("Starting Training...")
     trainer.train()
 
-    # 9. 모델 저장 (Processor 설정 포함)
+    # 11. 모델 저장 (Processor 설정 포함)
     # [Mod] current_output_dir를 사용하도록 수정
     final_save_path = os.path.join(current_output_dir, "best_model")
     trainer.save_model(final_save_path)
     processor.save_pretrained(final_save_path)
     print(f"Training Finished! Best Model saved at: {final_save_path}")
+
+    # =========================================================
+    # [추가] 12. 학습 종료 후 시각화 (Results & PR Curve)
+    # =========================================================
+    print("\n" + "="*50)
+    print("🎨 [Visualization] 저장된 데이터를 바탕으로 시각화를 시작합니다...")
+    
+    # (1) 학습 추이 그래프 그리기
+    csv_path = os.path.join(current_output_dir, "training_metrics.csv")
+    plot_training_results(csv_path, current_output_dir)
+
+    # (2) PR Curve 그리기 (Best Model로 최종 평가)
+    print("🚀 Best Model을 로드하여 최종 PR Curve를 평가합니다...")
+    best_model = load_model(final_save_path, train_dataset.id2label, train_dataset.label2id)
+    best_model.to(device)
+    
+    # 평가용 DataLoader 세팅 (병목 없이 빠르게!)
+    final_eval_loader = DataLoader(
+        eval_dataset, 
+        batch_size=Config.BATCH_SIZE, 
+        collate_fn=get_collate_fn(processor),
+        num_workers=Config.NUM_WORKERS,
+        pin_memory=True
+    )
+    
+    generate_pr_curve(best_model, final_eval_loader, device, current_output_dir)
+
+    # [추가] 3. Confusion Matrix 그리기
+    print("🚀 Best Model을 로드하여 Confusion Matrix를 생성합니다...")
+    generate_confusion_matrix(
+        model=best_model, 
+        dataloader=final_eval_loader, 
+        device=device, 
+        output_dir=current_output_dir,
+        id2label=train_dataset.id2label
+    )
+
+    # =========================================================
+    # [수정] 4. 실제 원본 사진에 추론 결과(Bounding Box) 그려보기
+    # =========================================================
+    print("📸 Best Model로 검증 원본 데이터를 랜덤 샘플링 후 직접 추론해 봅니다...")
+    visualize_inference_samples(
+        model=best_model,
+        processor=processor,
+        data_cfg=data_cfg,        # [변경] dataset 대신 data_cfg(경로 정보)를 넘김
+        device=device,
+        output_dir=current_output_dir,
+        id2label=train_dataset.id2label,
+        num_samples=4,
+        conf_threshold=0.4
+    )
+    
+    print("="*50)
+    print(f"✅ 모든 학습 및 시각화 프로세스가 완료되었습니다! ({current_output_dir} 확인)")
 
 if __name__ == "__main__":
     main()

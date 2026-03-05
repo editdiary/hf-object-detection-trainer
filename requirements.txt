@@ -7,3 +7,5 @@
 5. pip install torchmetrics
 6. pip install faster-coco-eval
 7. pip install pycocotools
+8. pip install scikit-learn
+9. pip install seaborn
