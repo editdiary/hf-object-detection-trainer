@@ -85,12 +85,25 @@ def main():
             
         with torch.no_grad():
             outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
-            
+
         logits = outputs.logits
-        pred_boxes = outputs.pred_boxes
+        num_target_classes = len(id2label) # 우리가 설정한 클래스 수 (참외 = 1개)
+        num_pred_classes = logits.shape[-1] # 모델이 실제로 뱉어낸 클래스 수
         
-        # 🔥 [핵심 수학적 버그 수정] softmax 대신 독립 확률 sigmoid 사용!
-        probs = logits.sigmoid() 
+        # =======================================================
+        # [무적의 Dynamic Activation] 모델 구조에 따라 자동 변환
+        # =======================================================
+        if num_pred_classes == num_target_classes + 1:
+            # 1. 오리지널 DETR 계열: 참외(1) + 배경(1) = 총 2개 출력
+            # -> 배경 클래스가 있으므로 Softmax 사용!
+            probs = logits.softmax(-1)
+        else:
+            # 2. RT-DETR 계열: 참외(1) = 총 1개 출력 (배경 없음)
+            # -> 독립 확률이므로 Sigmoid 사용!
+            probs = logits.sigmoid()
+        # =======================================================
+
+        pred_boxes = outputs.pred_boxes
         
         preds_list = []
         targets_list = []

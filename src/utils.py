@@ -113,7 +113,18 @@ class MAPLoggingCallback(TrainerCallback):
             
             logits = outputs.logits
             pred_boxes = outputs.pred_boxes
-            probs = logits.sigmoid()
+
+            # =======================================================
+            # [수정] 모델 객체(model.config)에서 정답 클래스 개수를 가져옴!
+            # =======================================================
+            num_pred_classes = logits.shape[-1]
+            num_target_classes = len(model.config.id2label)
+            
+            if num_pred_classes == num_target_classes + 1:
+                probs = logits.softmax(-1)
+            else:
+                probs = logits.sigmoid()
+            # =======================================================
             
             preds, targets = [], []
             
@@ -313,12 +324,20 @@ def generate_pr_curve(model, dataloader, device, output_dir):
         
         logits = outputs.logits
         pred_boxes = outputs.pred_boxes
-        probs = logits.sigmoid()
+
+        # =======================================================
+        # [핵심 수정] 반복문 밖에서 한 번에 Dynamic Activation 처리!
+        # =======================================================
+        num_target_classes = len(model.config.id2label)
+        num_pred_classes = logits.shape[-1]
         
-        for i in range(len(batch["labels"])):
-            num_pred_classes = probs.shape[-1]
-            num_target_classes = len(model.config.id2label)
-            
+        if num_pred_classes == num_target_classes + 1:
+            probs = logits.softmax(-1)
+        else:
+            probs = logits.sigmoid()
+        # =======================================================
+        
+        for i in range(len(batch["labels"])):            
             if num_pred_classes > num_target_classes:
                 # YOLOS처럼 배경 클래스가 더 포함된 경우 (맨 마지막 제외)
                 obj_scores, obj_labels = probs[i, :, :-1].max(dim=-1)
@@ -413,11 +432,16 @@ def generate_confusion_matrix(model, dataloader, device, output_dir, id2label, i
         
         logits = outputs.logits
         pred_boxes = outputs.pred_boxes
-        probs = logits.sigmoid()
+
+        num_pred_classes = logits.shape[-1]
+
+        if num_pred_classes == num_classes + 1:
+            probs = logits.softmax(-1)
+        else:
+            probs = logits.sigmoid()
         
         for i in range(len(batch["labels"])):
             # 모델(YOLOS vs RT-DETR)에 따른 슬라이싱 분기 처리
-            num_pred_classes = probs.shape[-1]
             if num_pred_classes > num_classes:
                 obj_scores, obj_labels = probs[i, :, :-1].max(dim=-1)
             else:
