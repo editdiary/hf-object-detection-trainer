@@ -1,5 +1,4 @@
 import os
-import sys
 
 # --- [필수] 라이브러리 버그로 인한 시끄러운 경고 끄기 ---
 import warnings
@@ -8,15 +7,25 @@ warnings.filterwarnings("ignore", message=".*copying from a non-meta parameter.*
 # -----------------------------------------------------
 
 import torch
+import torchvision.ops as ops
+from tqdm import tqdm
 from torch.utils.data import DataLoader
 from transformers import TrainingArguments, Trainer, set_seed, EarlyStoppingCallback
-import albumentations as A  # [Add] Albumentations 임포트
 
 # 우리가 만든 모듈 임포트
-from configs.config import Config
+from src.config import Config
 from src.dataset import create_dataset
 from src.model import load_model, load_processor
-from src.utils import get_collate_fn, MAPLoggingCallback, plot_training_results, generate_pr_curve, generate_confusion_matrix, visualize_inference_samples, visualize_training_samples
+from src.collate import get_collate_fn
+from src.callbacks import DetectionMetricsCallback
+from src.metrics import get_model_probs, extract_scores_and_labels, accepts_pixel_mask
+from src.visualization import (
+    plot_training_results,
+    generate_pr_curve,
+    generate_confusion_matrix,
+    visualize_inference_samples,
+    visualize_training_samples,
+)
 
 def main():
     # 1. 시드 설정 (재현성)
@@ -66,6 +75,9 @@ def main():
     )
 
     # 6. 학습 인자 설정
+    # bf16은 Ampere 이상 GPU에서 fp16보다 수치적으로 안정적 (overflow 없음, 동일 속도)
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    use_fp16 = torch.cuda.is_available() and not use_bf16
     training_args = TrainingArguments(
         # 기본 학습 설정 (Basic)
         output_dir=current_output_dir,      # [Mod] 동적으로 생성된 경로 사용
@@ -74,24 +86,26 @@ def main():
         num_train_epochs=Config.EPOCHS,
 
         # 하드웨어 및 속도 최적화 (Performance)
-        fp16=torch.cuda.is_available(),
+        fp16=use_fp16,
+        bf16=use_bf16,
         dataloader_pin_memory=True,
         dataloader_num_workers=Config.NUM_WORKERS,
+        dataloader_persistent_workers=True,  # 에포크 간 worker 재생성 오버헤드 방지
 
         # 학습률 및 규제 (Optimization)
         optim=Config.OPTIM,
         learning_rate=Config.LEARNING_RATE,
         weight_decay=Config.WEIGHT_DECAY,
         lr_scheduler_type=Config.LR_SCHEDULER_TYPE,
+        warmup_ratio=0.05,                  # 전체 스텝의 5%를 warmup으로 사용 (초기 학습 안정화)
 
         # 저장 및 평가 전략 (Strategy)
         eval_strategy="epoch", # 매 Epoch마다 검증
         logging_strategy="epoch",
-        #logging_steps=Config.LOGGING_STEPS,
         save_strategy="epoch",
         save_total_limit=Config.SAVE_TOTAL_LIMIT,
         load_best_model_at_end=True,        # 성능이 가장 높으면 Best Model 따로 저장
-        metric_for_best_model="eval_loss",  # CHECK 선택할 수 있는 옵션 또 뭐 있나 확인할 것
+        metric_for_best_model="eval_loss",  # 의도적 설계: 검증 손실 기반 일반화 성능을 기준으로 best model 선택
         greater_is_better=False,
 
         # 데이터 처리
@@ -100,11 +114,13 @@ def main():
 
     # 7. 콜백 초기화
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    map_callback = MAPLoggingCallback(
+    collate_fn = get_collate_fn(processor)
+    map_callback = DetectionMetricsCallback(
         eval_dataset=eval_dataset,
-        collate_fn=get_collate_fn(processor),
+        collate_fn=collate_fn,
         output_dir=current_output_dir,      # [Mod] CSV 파일도 같은 곳에 저장
-        device=device
+        device=device,
+        model=model,
     )
 
     # 8. Early Stopping 콜백 조건부 생성
@@ -112,17 +128,17 @@ def main():
 
     if Config.USE_EARLY_STOPPING:
         early_stopping = EarlyStoppingCallback(
-            early_stopping_patience=Config.EARLY_STOP_PATIENCE, 
+            early_stopping_patience=Config.EARLY_STOP_PATIENCE,
             early_stopping_threshold=Config.EARLY_STOP_THRESHOLD
         )
         callbacks.append(early_stopping)
         print(f"🛑 Early Stopping 활성화 (Patience: {Config.EARLY_STOP_PATIENCE})")
-    
+
     # 9. Trainer 초기화
     trainer = Trainer(
         model=model,
         args=training_args,
-        data_collator=get_collate_fn(processor),    # CHECK get_collate_fn도 무슨 기능 하는 건지 자세히 살펴볼 것
+        data_collator=collate_fn,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         callbacks=callbacks    # [Add] 커스텀 콜백 연동
@@ -137,71 +153,89 @@ def main():
         processor=processor,
         output_dir=current_output_dir,
         id2label=train_dataset.id2label,
-        num_samples=4
+        num_samples=Config.VIS_NUM_SAMPLES,
     )
     
     # 10. 학습 시작
     print("Starting Training...")
     trainer.train()
+    model.eval()  # load_best_model_at_end=True가 best checkpoint를 로드하므로 즉시 eval 모드로 전환
 
     # 11. 모델 저장 (Processor 설정 포함)
-    # [Mod] current_output_dir를 사용하도록 수정
     final_save_path = os.path.join(current_output_dir, "best_model")
     trainer.save_model(final_save_path)
     processor.save_pretrained(final_save_path)
     print(f"Training Finished! Best Model saved at: {final_save_path}")
 
     # =========================================================
-    # [추가] 12. 학습 종료 후 시각화 (Results & PR Curve)
+    # 12. 학습 종료 후 시각화
     # =========================================================
     print("\n" + "="*50)
     print("🎨 [Visualization] 저장된 데이터를 바탕으로 시각화를 시작합니다...")
-    
-    # (1) 학습 추이 그래프 그리기
+
+    # (1) 학습 추이 그래프
     csv_path = os.path.join(current_output_dir, "training_metrics.csv")
     plot_training_results(csv_path, current_output_dir)
 
-    # (2) PR Curve 그리기 (Best Model로 최종 평가)
-    print("🚀 Best Model을 로드하여 최종 PR Curve를 평가합니다...")
-    best_model = load_model(final_save_path, train_dataset.id2label, train_dataset.label2id)
-    best_model.to(device)
-    
-    # 평가용 DataLoader 세팅 (병목 없이 빠르게!)
+    # (2) 평가용 DataLoader (load_best_model_at_end=True로 model이 이미 best weights 포함)
     final_eval_loader = DataLoader(
-        eval_dataset, 
-        batch_size=Config.BATCH_SIZE, 
-        collate_fn=get_collate_fn(processor),
+        eval_dataset,
+        batch_size=Config.BATCH_SIZE,
+        collate_fn=collate_fn,
         num_workers=Config.NUM_WORKERS,
-        pin_memory=True
+        pin_memory=True,
     )
-    
-    generate_pr_curve(best_model, final_eval_loader, device, current_output_dir)
 
-    # [추가] 3. Confusion Matrix 그리기
-    print("🚀 Best Model을 로드하여 Confusion Matrix를 생성합니다...")
+    # (3) 단일 패스 추론 — PR Curve + Confusion Matrix에서 결과 공유
+    print("🚀 단일 패스 추론으로 PR Curve와 Confusion Matrix 데이터를 수집합니다...")
+    num_target_classes = len(train_dataset.id2label)
+    _accepts_mask = accepts_pixel_mask(model)
+    cached_predictions = []
+    for batch in tqdm(final_eval_loader, desc="Inference"):
+        pixel_values = batch["pixel_values"].to(device)
+        pixel_mask = batch.get("pixel_mask")
+        if pixel_mask is not None:
+            pixel_mask = pixel_mask.to(device)
+        with torch.no_grad():
+            if _accepts_mask:
+                outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
+            else:
+                outputs = model(pixel_values=pixel_values)
+        if not hasattr(outputs, 'pred_boxes'):
+            raise AttributeError("Model output missing 'pred_boxes'. Only DETR-style models with box regression heads are supported.")
+        probs = get_model_probs(outputs.logits, num_target_classes)
+        for i in range(len(batch["labels"])):
+            obj_scores, obj_labels = extract_scores_and_labels(probs[i], num_target_classes)
+            cached_predictions.append({
+                "obj_scores": obj_scores.cpu(),
+                "obj_labels": obj_labels.cpu(),
+                "p_boxes_xyxy": ops.box_convert(
+                    outputs.pred_boxes[i], in_fmt="cxcywh", out_fmt="xyxy"
+                ).cpu(),
+                "t_boxes_xyxy": ops.box_convert(
+                    batch["labels"][i]["boxes"], in_fmt="cxcywh", out_fmt="xyxy"
+                ),
+                "t_labels": batch["labels"][i]["class_labels"],
+            })
+
+    generate_pr_curve(cached_predictions, current_output_dir)
     generate_confusion_matrix(
-        model=best_model, 
-        dataloader=final_eval_loader, 
-        device=device, 
+        cached_predictions=cached_predictions,
         output_dir=current_output_dir,
-        id2label=train_dataset.id2label
+        id2label=train_dataset.id2label,
     )
 
-    # =========================================================
-    # [수정] 4. 실제 원본 사진에 추론 결과(Bounding Box) 그려보기
-    # =========================================================
+    # (4) 추론 시각화 (원본 이미지에 박스 그리기)
     print("📸 Best Model로 검증 원본 데이터를 랜덤 샘플링 후 직접 추론해 봅니다...")
     visualize_inference_samples(
-        model=best_model,
+        model=model,
         processor=processor,
-        data_cfg=data_cfg,        # [변경] dataset 대신 data_cfg(경로 정보)를 넘김
+        data_cfg=data_cfg,
         device=device,
         output_dir=current_output_dir,
         id2label=train_dataset.id2label,
-        num_samples=4,
-        conf_threshold=0.4
     )
-    
+
     print("="*50)
     print(f"✅ 모든 학습 및 시각화 프로세스가 완료되었습니다! ({current_output_dir} 확인)")
 

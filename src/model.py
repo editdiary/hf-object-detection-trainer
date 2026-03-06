@@ -7,7 +7,7 @@ from transformers import AutoModelForObjectDetection, AutoImageProcessor
 
 # 프로세서만 가볍게 로드하는 함수 (데이터셋 초기화용)
 def load_processor(checkpoint):
-    return AutoImageProcessor.from_pretrained(checkpoint, use_fast=False)
+    return AutoImageProcessor.from_pretrained(checkpoint, use_fast=True)
 
 # 모델 로드 함수 (학습용) - [수정됨] Processor 로딩 부분 제거
 def load_model(checkpoint, id2label, label2id):
