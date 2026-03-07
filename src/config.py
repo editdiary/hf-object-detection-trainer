@@ -12,25 +12,25 @@ class Config:
     # 1. Data
     # =========================================================
     # YAML 파일 경로 — 이것만 바꾸면 데이터셋 교체 완료
-    DATA_YAML_PATH = os.path.join("data", "99_exp_dataset", "data.yaml")
+    DATA_YAML_PATH = os.path.join("data", "99_exp_dataset_filtered", "data.yaml")
 
     # =========================================================
     # 2. Model & Experiment
     # =========================================================
     # 사전 학습 모델 체크포인트
     # 후보: facebook/detr-resnet-50 | PekingU/rtdetr_v2_r18vd | PekingU/rtdetr_v2_r50vd
-    MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r18vd"
+    MODEL_CHECKPOINT = "facebook/detr-resnet-50"
 
     # 실험 결과 저장 경로: {BASE_SAVE_DIR}/{PROJECT_NAME}/{EXPERIMENT_NAME}{N}/
     BASE_SAVE_DIR = "./runs"
-    PROJECT_NAME = "rtdetr_v2_r18-chamoe"
-    EXPERIMENT_NAME = "real-train"
+    PROJECT_NAME = "detr_r50"
+    EXPERIMENT_NAME = "exclude-small_exp"
 
     # =========================================================
     # 3. Training Hyperparameters
     # =========================================================
-    BATCH_SIZE = 16
-    EPOCHS = 5
+    BATCH_SIZE = 8
+    EPOCHS = 150
     # 옵티마이저: 'adamw_torch' | 'sgd' | 'adafactor'
     OPTIM = "adamw_torch"
     LEARNING_RATE = 5e-5
@@ -117,13 +117,13 @@ class Config:
             # 1. 공간적 변환 (위치, 회전, 크기)
             A.RandomResizedCrop(
                 size=(640, 640),      # 잘라낸 후 다시 맞출 크기
-                scale=(0.6, 1.0),     # 원본 이미지의 60% ~ 100% 면적을 랜덤 선택
+                scale=(0.5, 1.0),     # 원본 이미지의 50% ~ 100% 면적을 랜덤 선택
                 ratio=(0.75, 1.33),   # 가로세로 비율 유지 범위
                 p=0.4
             ),
             A.HorizontalFlip(p=0.5),
             A.Affine(
-                scale=(0.5, 1.1),
+                scale=(0.9, 1.1),
                 translate_percent=(-0.1, 0.1),
                 rotate=(-10, 10),
                 cval=114,   # 축소시 생기는 빈 공간을 회색(114)으로 채움
