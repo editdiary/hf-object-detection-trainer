@@ -92,7 +92,7 @@ def generate_pr_curve(cached_predictions, output_dir):
     Uses the same backend, threshold, and logic as DetectionMetricsCallback so
     the mAP@0.5 label on the chart is identical to the value written to the CSV.
     """
-    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox", backend="faster_coco_eval")
+    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox", backend="faster_coco_eval", extended_summary=True)
     metric.warn_on_many_detections = False
 
     for item in cached_predictions:

@@ -26,13 +26,16 @@ class DetectionMetricsCallback(TrainerCallback):
         self.best_metrics = {}
         self.accepts_pixel_mask = accepts_pixel_mask(model) if model is not None else True
 
-        # Build the DataLoader once so worker processes aren't respawned every epoch
+        # Build the DataLoader once so worker processes aren't respawned every epoch.
+        # persistent_workers=True keeps the worker pool alive between evaluation calls,
+        # matching the same setting used by the Trainer's own DataLoader.
         self.dataloader = DataLoader(
             eval_dataset,
             batch_size=Config.BATCH_SIZE,
             collate_fn=collate_fn,
             num_workers=Config.NUM_WORKERS,
             pin_memory=True,
+            persistent_workers=Config.NUM_WORKERS > 0,
         )
 
         os.makedirs(output_dir, exist_ok=True)
@@ -56,6 +59,9 @@ class DetectionMetricsCallback(TrainerCallback):
 
         num_target_classes = len(model.config.id2label)
         total_tp, total_fp, total_fn = 0, 0, 0
+
+        # --- Diagnostic: track raw score statistics ---
+        all_max_scores = []
 
         try:
             for batch in self.dataloader:
@@ -84,6 +90,9 @@ class DetectionMetricsCallback(TrainerCallback):
                         batch["labels"][i]["boxes"].to(self.device), in_fmt="cxcywh", out_fmt="xyxy"
                     )
                     target_labels = batch["labels"][i]["class_labels"].to(self.device)
+
+                    # --- Diagnostic: collect per-image top score ---
+                    all_max_scores.append(obj_scores.max().item() if len(obj_scores) > 0 else 0.0)
 
                     # mAP: discard very low-confidence predictions for speed
                     keep_map = obj_scores > Config.MAP_SCORE_THRESHOLD
@@ -127,7 +136,28 @@ class DetectionMetricsCallback(TrainerCallback):
         finally:
             map_metric.reset()
 
-        precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+        # --- Diagnostic: print raw score statistics ---
+        if all_max_scores:
+            import statistics
+            score_mean = statistics.mean(all_max_scores)
+            score_max = max(all_max_scores)
+            score_median = statistics.median(all_max_scores)
+            above_pr = sum(1 for s in all_max_scores if s >= Config.PR_SCORE_THRESHOLD)
+            print(
+                f"\n  📊 [Score Diagnostic] Epoch {state.epoch:.0f}: "
+                f"per-image max score — mean={score_mean:.4f}, median={score_median:.4f}, "
+                f"global_max={score_max:.4f} | "
+                f"images with max_score >= PR_THRESHOLD({Config.PR_SCORE_THRESHOLD}): "
+                f"{above_pr}/{len(all_max_scores)}"
+            )
+
+        no_preds = (total_tp + total_fp) == 0
+        if no_preds:
+            print(
+                f"\n  ⚠️  [Epoch {state.epoch:.0f}] PR_SCORE_THRESHOLD({Config.PR_SCORE_THRESHOLD}) 이상의 예측이 없습니다. "
+                "PR_SCORE_THRESHOLD를 낮추거나 더 많은 에포크를 학습하세요."
+            )
+        precision = total_tp / (total_tp + total_fp) if not no_preds else 0.0
         recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
         f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
         jaccard_index = total_tp / (total_tp + total_fp + total_fn) if (total_tp + total_fp + total_fn) > 0 else 0.0

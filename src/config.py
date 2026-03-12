@@ -12,7 +12,7 @@ class Config:
     # 1. Data
     # =========================================================
     # YAML 파일 경로 — 이것만 바꾸면 데이터셋 교체 완료
-    DATA_YAML_PATH = os.path.join("data", "99_exp_dataset", "data.yaml")
+    DATA_YAML_PATH = os.path.join("data", "99_exp_total_dataset", "data.yaml")
 
     # =========================================================
     # 2. Model & Experiment
@@ -23,21 +23,22 @@ class Config:
 
     # 실험 결과 저장 경로: {BASE_SAVE_DIR}/{PROJECT_NAME}/{EXPERIMENT_NAME}{N}/
     BASE_SAVE_DIR = "./runs"
-    PROJECT_NAME = "rtdetr_v2_r18-chamoe"
-    EXPERIMENT_NAME = "real-train"
+    PROJECT_NAME = "rtdetr_v2_r18"
+    EXPERIMENT_NAME = "full-dataset_check"
 
     # =========================================================
     # 3. Training Hyperparameters
     # =========================================================
     BATCH_SIZE = 16
-    EPOCHS = 5
+    EPOCHS = 150
     # 옵티마이저: 'adamw_torch' | 'sgd' | 'adafactor'
     OPTIM = "adamw_torch"
-    LEARNING_RATE = 5e-5
-    WEIGHT_DECAY = 1e-4
+    LEARNING_RATE = 1e-5
+    WEIGHT_DECAY = 1e-3
     # LR 스케줄러: 'linear' | 'cosine' | 'polynomial'
     LR_SCHEDULER_TYPE = "cosine"
     NUM_WORKERS = 12
+    MAX_GRAD_NORM = 0.1
 
     # =========================================================
     # 4. Saving & Logging
@@ -64,7 +65,7 @@ class Config:
 
     # Precision / Recall / F1 계산 시 예측 박스의 최소 confidence score
     # 이보다 낮은 예측은 무시됨 (값이 높을수록 엄격한 평가)
-    PR_SCORE_THRESHOLD = 0.5
+    PR_SCORE_THRESHOLD = 0.25
 
     # TP/FP 판별에 사용하는 IoU 임계값 (표준: 0.5)
     # 이보다 높은 IoU를 가진 예측만 TP로 인정
@@ -75,13 +76,13 @@ class Config:
     PR_CURVE_MIN_SCORE = 0.01
 
     # Confusion Matrix 생성 시 예측 박스의 최소 confidence score
-    CONF_MATRIX_CONF_THRESHOLD = 0.5    # (=PR_SCORE_THRESHOLD) 권장
+    CONF_MATRIX_CONF_THRESHOLD = 0.25   # (=PR_SCORE_THRESHOLD) 권장
 
     # =========================================================
     # 7. Visualization
     # =========================================================
     # 학습 전 augmentation 확인 및 추론 결과 시각화에 사용할 샘플 수
-    VIS_NUM_SAMPLES = 4
+    VIS_NUM_SAMPLES = 8
 
     # 추론 시각화에서 바운딩 박스를 표시할 최소 confidence score
     VIS_CONF_THRESHOLD = 0.4
@@ -117,16 +118,15 @@ class Config:
             # 1. 공간적 변환 (위치, 회전, 크기)
             A.RandomResizedCrop(
                 size=(640, 640),      # 잘라낸 후 다시 맞출 크기
-                scale=(0.6, 1.0),     # 원본 이미지의 60% ~ 100% 면적을 랜덤 선택
+                scale=(0.5, 1.0),     # 원본 이미지의 50% ~ 100% 면적을 랜덤 선택
                 ratio=(0.75, 1.33),   # 가로세로 비율 유지 범위
                 p=0.4
             ),
             A.HorizontalFlip(p=0.5),
             A.Affine(
-                scale=(0.5, 1.1),
+                scale=(0.9, 1.1),
                 translate_percent=(-0.1, 0.1),
                 rotate=(-10, 10),
-                cval=114,   # 축소시 생기는 빈 공간을 회색(114)으로 채움
                 p=0.4
             ),
 
@@ -135,7 +135,7 @@ class Config:
                 brightness=0.3, 
                 contrast=0.3, 
                 saturation=0.2, 
-                hue=0.05, 
+                hue=0.015, 
                 p=0.5
             ),
 

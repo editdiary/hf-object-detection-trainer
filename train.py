@@ -95,6 +95,7 @@ def main():
         # 학습률 및 규제 (Optimization)
         optim=Config.OPTIM,
         learning_rate=Config.LEARNING_RATE,
+        max_grad_norm=Config.MAX_GRAD_NORM,
         weight_decay=Config.WEIGHT_DECAY,
         lr_scheduler_type=Config.LR_SCHEDULER_TYPE,
         warmup_ratio=0.05,                  # 전체 스텝의 5%를 warmup으로 사용 (초기 학습 안정화)
