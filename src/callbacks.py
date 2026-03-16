@@ -3,6 +3,7 @@ Custom Trainer callbacks for the object detection training pipeline.
 """
 import os
 import csv
+from collections import defaultdict
 
 import torch
 import torchvision.ops as ops
@@ -12,6 +13,71 @@ from torch.utils.data import DataLoader
 
 from src.config import Config
 from src.metrics import get_model_probs, extract_scores_and_labels, match_boxes, accepts_pixel_mask
+
+
+class LossComponentCallback(TrainerCallback):
+    """
+    Tracks individual loss components (VFL, L1 BBox, GIoU, etc.) during training
+    and prints the average breakdown at the end of every epoch.
+
+    Works with a custom Trainer that stores `_last_loss_dict` on itself after each step.
+    """
+
+    def __init__(self):
+        self.epoch_losses = defaultdict(list)
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        # The custom LossLoggingTrainer stores the per-step loss_dict on the model
+        if model is not None and hasattr(model, "_last_loss_dict"):
+            for key, value in model._last_loss_dict.items():
+                self.epoch_losses[key].append(value)
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if not self.epoch_losses:
+            return
+
+        epoch = int(state.epoch)
+        print(f"\n{'='*60}")
+        print(f"  [Epoch {epoch}] Loss Component Breakdown (train avg)")
+        print(f"{'-'*60}")
+
+        # Group losses: primary, auxiliary, denoising
+        primary, auxiliary, denoising = {}, {}, {}
+        for key, values in sorted(self.epoch_losses.items()):
+            avg = sum(values) / len(values)
+            if "_dn_" in key:
+                denoising[key] = avg
+            elif "_aux_" in key:
+                auxiliary[key] = avg
+            else:
+                primary[key] = avg
+
+        # Print primary losses
+        for key, avg in primary.items():
+            print(f"  {key:<25s}: {avg:.6f}")
+
+        # Print auxiliary losses (collapsed summary)
+        if auxiliary:
+            aux_total = sum(auxiliary.values())
+            print(f"  {'[auxiliary total]':<25s}: {aux_total:.6f}  ({len(auxiliary)} components)")
+            for key, avg in auxiliary.items():
+                print(f"    {key:<23s}: {avg:.6f}")
+
+        # Print denoising losses (collapsed summary)
+        if denoising:
+            dn_total = sum(denoising.values())
+            print(f"  {'[denoising total]':<25s}: {dn_total:.6f}  ({len(denoising)} components)")
+            for key, avg in denoising.items():
+                print(f"    {key:<23s}: {avg:.6f}")
+
+        # Grand total
+        grand_total = sum(sum(v) / len(v) for v in self.epoch_losses.values())
+        print(f"{'-'*60}")
+        print(f"  {'TOTAL LOSS':<25s}: {grand_total:.6f}")
+        print(f"{'='*60}\n")
+
+        # Reset for next epoch
+        self.epoch_losses = defaultdict(list)
 
 
 class DetectionMetricsCallback(TrainerCallback):

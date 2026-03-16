@@ -18,13 +18,47 @@ class Config:
     # 2. Model & Experiment
     # =========================================================
     # 사전 학습 모델 체크포인트
-    # 후보: facebook/detr-resnet-50 | PekingU/rtdetr_v2_r18vd | PekingU/rtdetr_v2_r50vd
+    # 후보: facebook/detr-resnet-50 | PekingU/rtdetr_r18vd | PekingU/rtdetr_v2_r34vd
     MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r18vd"
 
     # 실험 결과 저장 경로: {BASE_SAVE_DIR}/{PROJECT_NAME}/{EXPERIMENT_NAME}{N}/
-    BASE_SAVE_DIR = "./runs"
+    BASE_SAVE_DIR = "./exp_test"
     PROJECT_NAME = "rtdetr_v2_r18"
     EXPERIMENT_NAME = "full-dataset_check"
+
+    # 입력 이미지 크기 (증강 파이프라인의 RandomResizedCrop에서 사용)
+    IMAGE_SIZE = 640
+
+    # Backbone 가중치 동결 여부 (True면 backbone은 학습하지 않음)
+    FREEZE_BACKBONE = False
+
+    # =========================================================
+    # 2-1. Loss Hyperparameters (RT-DETR v2 기본값)
+    # =========================================================
+    # True로 설정하면 매 에포크마다 개별 Loss 항목(VFL, L1 BBox, GIoU 등)의
+    # 평균을 출력합니다. 디버깅/분석용이며, False면 기본 Trainer를 사용합니다.
+    DEBUG_LOSS = False
+
+    # 각 Loss 항목의 가중치 (클수록 해당 loss 비중 증가)
+    WEIGHT_LOSS_VFL = 1.0       # Varifocal Loss 가중치 (default: 1.0)
+    WEIGHT_LOSS_BBOX = 5.0      # L1 BBox Regression Loss 가중치 (default: 5.0)
+    WEIGHT_LOSS_GIOU = 2.0      # GIoU Loss 가중치 (default: 2.0)
+
+    # Focal Loss 파라미터
+    FOCAL_LOSS_ALPHA = 0.75     # 양성/음성 클래스 균형 (높을수록 양성 가중) (default: 0.75)
+    FOCAL_LOSS_GAMMA = 2.0      # 어려운 샘플 집중 정도 (높을수록 hard example 집중) (default: 2.0)
+
+    # =========================================================
+    # 2-2. Matcher (Hungarian) Cost Coefficients
+    # =========================================================
+    # bipartite matching 시 각 cost matrix의 가중치
+    # 작은 객체의 spatial misalignment 패널티를 줄이기 위해 bbox/giou를 낮게 설정
+    MATCHER_CLASS_COST = 2.0    # 분류 cost 가중치 (default: 2.0)
+    MATCHER_BBOX_COST = 0.5    # L1 bbox cost 가중치 (default: 5.0) — 소형 객체 친화적으로 감소
+    MATCHER_GIOU_COST = 0.5    # GIoU cost 가중치 (default: 2.0) — 소형 객체 친화적으로 감소
+
+    # Matcher 디버그: 처음 N 스텝 동안 cost matrix 평균값 출력
+    DEBUG_MATCHER_STEPS = 10
 
     # =========================================================
     # 3. Training Hyperparameters
@@ -33,8 +67,8 @@ class Config:
     EPOCHS = 150
     # 옵티마이저: 'adamw_torch' | 'sgd' | 'adafactor'
     OPTIM = "adamw_torch"
-    LEARNING_RATE = 1e-5
-    WEIGHT_DECAY = 1e-3
+    LEARNING_RATE = 1e-4
+    WEIGHT_DECAY = 1e-4
     # LR 스케줄러: 'linear' | 'cosine' | 'polynomial'
     LR_SCHEDULER_TYPE = "cosine"
     NUM_WORKERS = 12
@@ -61,7 +95,7 @@ class Config:
     # =========================================================
     # mAP 계산 시 포함할 최소 confidence score
     # 낮게 설정할수록 더 많은 예측이 포함되어 AP 곡선이 정확해짐
-    MAP_SCORE_THRESHOLD = 0.01
+    MAP_SCORE_THRESHOLD = 0.001
 
     # Precision / Recall / F1 계산 시 예측 박스의 최소 confidence score
     # 이보다 낮은 예측은 무시됨 (값이 높을수록 엄격한 평가)
@@ -73,7 +107,7 @@ class Config:
 
     # Precision-Recall Curve 구성 시 포함할 최소 confidence score
     # 매우 낮게 설정하여 전체 곡선을 그림
-    PR_CURVE_MIN_SCORE = 0.01
+    PR_CURVE_MIN_SCORE = 0.001
 
     # Confusion Matrix 생성 시 예측 박스의 최소 confidence score
     CONF_MATRIX_CONF_THRESHOLD = 0.25   # (=PR_SCORE_THRESHOLD) 권장
@@ -108,16 +142,17 @@ class Config:
                 return full_path
             counter += 1
 
-    @staticmethod
-    def get_train_transforms():
+    @classmethod
+    def get_train_transforms(cls):
         """
         Albumentations 증강 파이프라인.
         필요 없는 기법은 확률(p)을 0으로 하거나 주석 처리하면 됩니다.
         """
+        img_size = cls.IMAGE_SIZE
         return A.Compose([
             # 1. 공간적 변환 (위치, 회전, 크기)
             A.RandomResizedCrop(
-                size=(640, 640),      # 잘라낸 후 다시 맞출 크기
+                size=(img_size, img_size),  # 잘라낸 후 다시 맞출 크기
                 scale=(0.5, 1.0),     # 원본 이미지의 50% ~ 100% 면적을 랜덤 선택
                 ratio=(0.75, 1.33),   # 가로세로 비율 유지 범위
                 p=0.4
@@ -143,9 +178,9 @@ class Config:
             A.MotionBlur(blur_limit=5, p=0.2),
             A.GaussNoise(std_range=(5.0 / 255, 15.0 / 255), p=0.1),
             A.CoarseDropout(
-                num_holes_range=(2, 6),
-                hole_height_range=(8, 24),
-                hole_width_range=(8, 24),
+                num_holes_range=(2, 8),
+                hole_height_range=(4, 16),
+                hole_width_range=(4, 16),
                 fill=0,
                 p=0.2
             ),

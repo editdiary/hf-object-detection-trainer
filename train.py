@@ -17,7 +17,7 @@ from src.config import Config
 from src.dataset import create_dataset
 from src.model import load_model, load_processor
 from src.collate import get_collate_fn
-from src.callbacks import DetectionMetricsCallback
+from src.callbacks import DetectionMetricsCallback, LossComponentCallback
 from src.metrics import get_model_probs, extract_scores_and_labels, accepts_pixel_mask
 from src.visualization import (
     plot_training_results,
@@ -26,6 +26,99 @@ from src.visualization import (
     visualize_inference_samples,
     visualize_training_samples,
 )
+
+def _patch_matcher_debug(model, max_steps):
+    """Monkey-patch the RTDetrHungarianMatcher to log cost matrix statistics
+    for the first `max_steps` training steps."""
+    import logging
+    logger = logging.getLogger("matcher_debug")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("[MatcherDebug] %(message)s"))
+        logger.addHandler(handler)
+
+    # Find the matcher inside the model's loss function
+    criterion = getattr(model, "criterion", None)
+    if criterion is None:
+        logger.warning("No criterion found on model — matcher debug skipped.")
+        return
+    matcher = getattr(criterion, "matcher", None)
+    if matcher is None:
+        logger.warning("No matcher found on criterion — matcher debug skipped.")
+        return
+
+    logger.info(
+        f"Matcher costs — class: {matcher.class_cost}, "
+        f"bbox: {matcher.bbox_cost}, giou: {matcher.giou_cost}"
+    )
+
+    original_forward = matcher.forward.__wrapped__ if hasattr(matcher.forward, '__wrapped__') else matcher.forward
+    step_counter = {"n": 0}
+
+    @torch.no_grad()
+    def _debug_forward(outputs, targets):
+        import torch.nn.functional as F
+        from transformers.loss.loss_for_object_detection import generalized_box_iou
+        from transformers.image_transforms import center_to_corners_format
+
+        step_counter["n"] += 1
+        step = step_counter["n"]
+
+        if step <= max_steps:
+            batch_size, num_queries = outputs["logits"].shape[:2]
+            out_bbox = outputs["pred_boxes"].flatten(0, 1)
+            target_ids = torch.cat([v["class_labels"] for v in targets])
+            target_bbox = torch.cat([v["boxes"] for v in targets])
+
+            # Classification cost
+            if matcher.use_focal_loss:
+                out_prob = F.sigmoid(outputs["logits"].flatten(0, 1))
+                out_prob = out_prob[:, target_ids]
+                neg_cost_class = (1 - matcher.alpha) * (out_prob**matcher.gamma) * (-(1 - out_prob + 1e-8).log())
+                pos_cost_class = matcher.alpha * ((1 - out_prob) ** matcher.gamma) * (-(out_prob + 1e-8).log())
+                class_cost = pos_cost_class - neg_cost_class
+            else:
+                out_prob = outputs["logits"].flatten(0, 1).softmax(-1)
+                class_cost = -out_prob[:, target_ids]
+
+            bbox_cost = torch.cdist(out_bbox, target_bbox, p=1)
+            giou_cost = -generalized_box_iou(
+                center_to_corners_format(out_bbox),
+                center_to_corners_format(target_bbox),
+            )
+
+            logger.info(
+                f"Step {step}/{max_steps} | "
+                f"class_cost: {class_cost.mean().item():.4f} (weighted: {matcher.class_cost * class_cost.mean().item():.4f}) | "
+                f"bbox_cost: {bbox_cost.mean().item():.4f} (weighted: {matcher.bbox_cost * bbox_cost.mean().item():.4f}) | "
+                f"giou_cost: {giou_cost.mean().item():.4f} (weighted: {matcher.giou_cost * giou_cost.mean().item():.4f})"
+            )
+
+        return original_forward(outputs, targets)
+
+    matcher.forward = _debug_forward
+
+
+class LossLoggingTrainer(Trainer):
+    """Trainer that captures per-step loss component breakdown from model outputs.
+    Only used when Config.DEBUG_LOSS is enabled."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        outputs = model(**inputs)
+        loss = outputs.loss
+
+        # Store individual loss components on the model for the callback to read
+        if hasattr(outputs, "loss_dict") and outputs.loss_dict is not None:
+            model._last_loss_dict = {
+                k: v.item() if isinstance(v, torch.Tensor) else v
+                for k, v in outputs.loss_dict.items()
+            }
+        else:
+            model._last_loss_dict = {}
+
+        return (loss, outputs) if return_outputs else loss
+
 
 def main():
     # 1. 시드 설정 (재현성)
@@ -69,10 +162,25 @@ def main():
     # 5. 모델 로드 (Label 정보 주입)
     print(f"Loading Model: {Config.MODEL_CHECKPOINT}")
     model = load_model(
-        Config.MODEL_CHECKPOINT, 
-        train_dataset.id2label, 
-        train_dataset.label2id
+        Config.MODEL_CHECKPOINT,
+        train_dataset.id2label,
+        train_dataset.label2id,
+        config=Config
     )
+
+    # 5-1. Backbone 가중치 동결 (선택)
+    if Config.FREEZE_BACKBONE:
+        frozen_count = 0
+        for name, param in model.named_parameters():
+            if "backbone" in name:
+                param.requires_grad = False
+                frozen_count += 1
+        print(f"🧊 Backbone 동결 완료: {frozen_count}개 파라미터가 학습에서 제외됩니다.")
+
+    # 5-2. Matcher 디버그 패치 (첫 N 스텝의 cost matrix 평균 출력)
+    if Config.DEBUG_MATCHER_STEPS > 0:
+        _patch_matcher_debug(model, Config.DEBUG_MATCHER_STEPS)
+        print(f"🔍 Matcher Debug 활성화: 첫 {Config.DEBUG_MATCHER_STEPS} 스텝의 cost matrix 통계를 출력합니다.")
 
     # 6. 학습 인자 설정
     # bf16은 Ampere 이상 GPU에서 fp16보다 수치적으로 안정적 (overflow 없음, 동일 속도)
@@ -98,7 +206,7 @@ def main():
         max_grad_norm=Config.MAX_GRAD_NORM,
         weight_decay=Config.WEIGHT_DECAY,
         lr_scheduler_type=Config.LR_SCHEDULER_TYPE,
-        warmup_ratio=0.05,                  # 전체 스텝의 5%를 warmup으로 사용 (초기 학습 안정화)
+        warmup_ratio=0.02,                  # 전체 스텝의 2%를 warmup으로 사용 (초기 학습 안정화)
 
         # 저장 및 평가 전략 (Strategy)
         eval_strategy="epoch", # 매 Epoch마다 검증
@@ -123,9 +231,12 @@ def main():
         device=device,
         model=model,
     )
-
     # 8. Early Stopping 콜백 조건부 생성
     callbacks = [map_callback]
+
+    if Config.DEBUG_LOSS:
+        callbacks.append(LossComponentCallback())
+        print("🔍 DEBUG_LOSS 활성화: 매 에포크마다 개별 Loss 항목(VFL, BBox, GIoU 등)을 출력합니다.")
 
     if Config.USE_EARLY_STOPPING:
         early_stopping = EarlyStoppingCallback(
@@ -136,7 +247,8 @@ def main():
         print(f"🛑 Early Stopping 활성화 (Patience: {Config.EARLY_STOP_PATIENCE})")
 
     # 9. Trainer 초기화
-    trainer = Trainer(
+    TrainerClass = LossLoggingTrainer if Config.DEBUG_LOSS else Trainer
+    trainer = TrainerClass(
         model=model,
         args=training_args,
         data_collator=collate_fn,
