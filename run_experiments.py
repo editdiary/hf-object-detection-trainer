@@ -20,13 +20,13 @@ from dataclasses import dataclass, field
 # =========================================================
 
 # 반복 실험마다 사용할 시드 목록 (재현 가능한 고정 시드)
-SEEDS = [42, 123, 456, 789, 1024]
+SEEDS = [42, 42, 42, 42, 42]
 
 # 모든 모델에 공통으로 적용할 학습 파라미터 (필요시 수정)
 COMMON_PARAMS = {
     "BATCH_SIZE": 16,
     "EPOCHS": 150,
-    "LEARNING_RATE": 1e-5,
+    "LEARNING_RATE": 1e-4,
     "WEIGHT_DECAY": 1e-4,
     "OPTIM": "adamw_torch",
     "LR_SCHEDULER_TYPE": "cosine",
@@ -78,22 +78,28 @@ MODEL_CONFIGS = {
         project_name="real_rtdetr_v2_r34",
         experiment_name="repeat-exp",
     ),
-    # "r50": ModelConfig(
-    #     key="r50",
-    #     checkpoint="PekingU/rtdetr_v2_r50vd",
-    #     project_name="real_rtdetr_v2_r50",
-    #     experiment_name="repeat-exp",
-    # ),
-    # "detr": ModelConfig(
-    #     key="detr",
-    #     checkpoint="facebook/detr-resnet-50",
-    #     project_name="real_detr_r50",
-    #     experiment_name="repeat-exp",
-    #     overrides={
-    #         "BATCH_SIZE": 8,        # DETR은 메모리 사용량이 크므로 배치 축소
-    #         "IMAGE_SIZE": 800,      # DETR 기본 입력 크기 800x800
-    #     },
-    # ),
+    "r50": ModelConfig(
+        key="r50",
+        checkpoint="PekingU/rtdetr_v2_r50vd",
+        project_name="real_rtdetr_v2_r50",
+        experiment_name="repeat-exp",
+    ),
+    "r101": ModelConfig(
+        key="r101",
+        checkpoint="PekingU/rtdetr_v2_r101vd",
+        project_name="real_rtdetr_v2_r101",
+        experiment_name="repeat-exp",
+    ),
+    "detr": ModelConfig(
+        key="detr",
+        checkpoint="facebook/detr-resnet-50",
+        project_name="real_detr_r50",
+        experiment_name="repeat-exp",
+        overrides={
+            "BATCH_SIZE": 8,        # DETR은 메모리 사용량이 크므로 배치 축소
+            "IMAGE_SIZE": 800,      # DETR 기본 입력 크기 800x800
+        },
+    ),
 }
 
 
@@ -169,7 +175,7 @@ def main():
 
     # 실행할 모델 목록 결정
     if args.model == "all":
-        models_to_run = ["r34", "r50", "detr"]
+        models_to_run = ["r18", "r34", "r50", "r101"]
     else:
         models_to_run = [args.model]
 

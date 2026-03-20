@@ -16,3 +16,9 @@ __pycache__/
 .vscode/
 .idea/
 .env
+
+# 기타 파일들
+real_runs/
+temp_runs/
+val_inference_results/
+same_seed_runs/

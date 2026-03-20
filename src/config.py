@@ -22,8 +22,8 @@ class Config:
     MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r18vd"
 
     # 실험 결과 저장 경로: {BASE_SAVE_DIR}/{PROJECT_NAME}/{EXPERIMENT_NAME}{N}/
-    BASE_SAVE_DIR = "./exp_test"
-    PROJECT_NAME = "rtdetr_v2_r18"
+    BASE_SAVE_DIR = "./same_seed_runs"
+    PROJECT_NAME = "rtdetr_r18"
     EXPERIMENT_NAME = "full-dataset_check"
 
     # 입력 이미지 크기 (증강 파이프라인의 RandomResizedCrop에서 사용)
@@ -67,7 +67,7 @@ class Config:
     EPOCHS = 150
     # 옵티마이저: 'adamw_torch' | 'sgd' | 'adafactor'
     OPTIM = "adamw_torch"
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 1e-5
     WEIGHT_DECAY = 1e-4
     # LR 스케줄러: 'linear' | 'cosine' | 'polynomial'
     LR_SCHEDULER_TYPE = "cosine"

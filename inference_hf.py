@@ -10,7 +10,7 @@ Usage:
         --model_dir runs/rtdetr_v2_r34/repeat-exp_seed421/best_model \
         --image_dir /path/to/test/images \
         --output results.json \
-        --conf_threshold 0.5
+        --conf_threshold 0.001
 """
 
 import argparse

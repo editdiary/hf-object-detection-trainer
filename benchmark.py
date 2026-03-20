@@ -1,140 +1,93 @@
 """
 Multi-model object detection benchmark.
 
-Loads COCO-format prediction files (produced by inference_hf.py / inference_yolo.py),
+Loads COCO-format prediction files from per-model subfolders,
 evaluates them against YOLO-format ground truth using pycocotools COCOeval,
 and produces a comparison table + CSV.
 
 Usage:
-    python benchmark.py \
-        --results_dir inference_results/ \
-        --gt_dir /path/to/test/images \
-        --conf_threshold 0.25 \
-        --output_csv benchmark_summary.csv
+    python benchmark.py
+    python benchmark.py --results_dir val_inference_results --max_dets 300
 """
 
 import argparse
 import csv
-import glob
 import json
 import os
 
-import torch
+import numpy as np
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-from src.metrics import compute_precision_recall_f1
+from src.config import Config
 
 
 # ──────────────────────────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────────────────────────
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Benchmark multiple object detection models against YOLO GT"
-    )
-    parser.add_argument("--results_dir", required=True,
-                        help="Directory containing *_results.json files")
-    parser.add_argument("--gt_dir", required=True,
-                        help="Path to images directory (YOLO labels derived via images/→labels/ swap)")
-    parser.add_argument("--conf_threshold", type=float, default=0.25,
-                        help="Confidence threshold for P/R/F1 (default: 0.25)")
-    parser.add_argument("--iou_threshold", type=float, default=0.5,
-                        help="IoU threshold for P/R/F1 matching (default: 0.5)")
-    parser.add_argument("--output_csv", default="benchmark_summary.csv",
-                        help="Path for CSV output (default: benchmark_summary.csv)")
-    return parser.parse_args()
-
-
-# ──────────────────────────────────────────────────────────────
-# Step 1: Discover prediction files
+# Step 1: Discover model subfolders
 # ──────────────────────────────────────────────────────────────
 def discover_models(results_dir):
     """
-    Scan results_dir for prediction JSON files.
+    Scan results_dir for model subfolders containing the required JSON triplet.
+
+    Expected structure:
+        results_dir/{model_name}/{model_name}_results.json
+        results_dir/{model_name}/{model_name}_results_images.json
+        results_dir/{model_name}/{model_name}_results_categories.json
 
     Returns list of dicts: {name, results_path, images_path, categories_path}
     """
-    all_json = sorted(glob.glob(os.path.join(results_dir, "*.json")))
-
-    # Filter out companion files
-    result_files = [
-        f for f in all_json
-        if not f.endswith("_images.json") and not f.endswith("_categories.json")
-    ]
-
     models = []
-    for rpath in result_files:
-        base, ext = os.path.splitext(rpath)
-        images_path = f"{base}_images{ext}"
-        categories_path = f"{base}_categories{ext}"
-
-        if not os.path.exists(images_path):
-            print(f"⚠ Skipping {rpath}: missing {os.path.basename(images_path)}")
-            continue
-        if not os.path.exists(categories_path):
-            print(f"⚠ Skipping {rpath}: missing {os.path.basename(categories_path)}")
+    for entry in sorted(os.listdir(results_dir)):
+        sub = os.path.join(results_dir, entry)
+        if not os.path.isdir(sub):
             continue
 
-        # Derive model name from filename
-        fname = os.path.basename(base)
-        # Strip common suffixes like _results, _predictions
-        for suffix in ("_results", "_predictions", "_preds"):
-            if fname.endswith(suffix):
-                fname = fname[: -len(suffix)]
-                break
+        results_path = os.path.join(sub, f"{entry}_results.json")
+        images_path = os.path.join(sub, f"{entry}_results_images.json")
+        categories_path = os.path.join(sub, f"{entry}_results_categories.json")
+
+        missing = [
+            os.path.basename(p) for p in [results_path, images_path, categories_path]
+            if not os.path.exists(p)
+        ]
+        if missing:
+            print(f"Skipping {entry}: missing {', '.join(missing)}")
+            continue
 
         models.append({
-            "name": fname,
-            "results_path": rpath,
+            "name": entry,
+            "results_path": results_path,
             "images_path": images_path,
             "categories_path": categories_path,
         })
-
     return models
 
 
 # ──────────────────────────────────────────────────────────────
-# Step 2: Build COCO ground truth
+# Step 2: Build COCO ground truth from YOLO labels
 # ──────────────────────────────────────────────────────────────
-def build_coco_gt(images_info, categories_info, gt_dir):
+def build_coco_gt(images_info, categories_info, labels_dir):
     """
-    Build a COCO-format ground truth dict from YOLO label files.
+    Build a COCO-format ground truth from YOLO label files.
 
     Args:
         images_info:     list of {id, file_name, width, height}
         categories_info: list of {id, name}
-        gt_dir:          path to images directory (labels derived via images/→labels/ swap)
+        labels_dir:      path to directory containing YOLO .txt label files
 
     Returns:
         COCO object loaded from the GT dict
     """
     annotations = []
     ann_id = 1
-    sep = os.sep
 
-    for img_info in images_info:
-        file_name = img_info["file_name"]
-        img_id = img_info["id"]
-        W = img_info["width"]
-        H = img_info["height"]
-
-        # Find the actual image path (may be in subdirectory)
-        candidates = glob.glob(os.path.join(gt_dir, "**", file_name), recursive=True)
-        if not candidates:
-            continue
-        img_path = candidates[0]
-
-        # Derive label path: images/ → labels/ swap
-        if f"{sep}images{sep}" in img_path:
-            label_path = img_path.replace(f"{sep}images{sep}", f"{sep}labels{sep}")
-        else:
-            label_path = img_path.replace("images", "labels")
-        label_path = label_path.rsplit(".", 1)[0] + ".txt"
-
+    for img in images_info:
+        stem = os.path.splitext(img["file_name"])[0]
+        label_path = os.path.join(labels_dir, f"{stem}.txt")
         if not os.path.exists(label_path):
             continue
 
+        W, H = img["width"], img["height"]
         with open(label_path, "r") as f:
             for line in f:
                 parts = line.strip().split()
@@ -145,12 +98,10 @@ def build_coco_gt(images_info, categories_info, gt_dir):
                 # Normalized cxcywh → pixel xywh (COCO format)
                 x = (cx - bw / 2) * W
                 y = (cy - bh / 2) * H
-                w = bw * W
-                h = bh * H
-
+                w, h = bw * W, bh * H
                 annotations.append({
                     "id": ann_id,
-                    "image_id": img_id,
+                    "image_id": img["id"],
                     "category_id": cls_id,
                     "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
                     "area": round(w * h, 2),
@@ -171,134 +122,94 @@ def build_coco_gt(images_info, categories_info, gt_dir):
 
 
 # ──────────────────────────────────────────────────────────────
-# Step 3: Build cached predictions for P/R/F1
+# Step 3: Extract all metrics from COCOeval
 # ──────────────────────────────────────────────────────────────
-def build_cached_predictions(predictions, images_info, gt_dir):
+def extract_metrics_from_cocoeval(coco_eval):
     """
-    Convert COCO-format predictions and YOLO GT into the tensor format
-    expected by compute_precision_recall_f1.
+    Extract mAP50-95, mAP50, and max-F1 (with P/R) from COCOeval's
+    accumulated precision array.
+
+    We compute directly from eval["precision"] rather than using
+    summarize()'s stats, because stats[0] hardcodes maxDets=100 which
+    may not be in our custom maxDets list.
+
+    The precision array has shape (T, R, K, A, M):
+        T = IoU thresholds (0.50, 0.55, ..., 0.95)
+        R = 101 recall thresholds (0.00, 0.01, ..., 1.00)
+        K = categories, A = area ranges, M = maxDets settings
+
+    Returns:
+        (mAP50_95, mAP50, precision, recall, f1)
     """
-    # Index images by id
-    img_by_id = {img["id"]: img for img in images_info}
+    precision_array = coco_eval.eval["precision"]   # (T, R, K, A, M)
+    recall_thresholds = coco_eval.params.recThrs     # [0.0, 0.01, ..., 1.0]
 
-    # Group predictions by image_id
-    preds_by_img = {}
-    for pred in predictions:
-        img_id = pred["image_id"]
-        preds_by_img.setdefault(img_id, []).append(pred)
+    # All IoU thresholds, area='all' (0), maxDets=last (-1)
+    p_all = precision_array[:, :, 0, 0, -1]  # (T, 101)
 
-    sep = os.sep
-    cached = []
+    # mAP50-95: mean AP across all IoU thresholds
+    aps = []
+    for t in range(p_all.shape[0]):
+        valid = p_all[t] > -1
+        if valid.any():
+            aps.append(p_all[t][valid].mean())
+    map50_95 = float(np.mean(aps)) if aps else 0.0
 
-    for img_info in images_info:
-        img_id = img_info["id"]
-        W = img_info["width"]
-        H = img_info["height"]
-        file_name = img_info["file_name"]
+    # mAP50: AP at IoU=0.50 (index 0)
+    valid50 = p_all[0] > -1
+    map50 = float(p_all[0][valid50].mean()) if valid50.any() else 0.0
 
-        # Load GT from YOLO label
-        candidates = glob.glob(os.path.join(gt_dir, "**", file_name), recursive=True)
-        gt_boxes_norm = []
-        gt_labels = []
-        if candidates:
-            img_path = candidates[0]
-            if f"{sep}images{sep}" in img_path:
-                label_path = img_path.replace(f"{sep}images{sep}", f"{sep}labels{sep}")
-            else:
-                label_path = img_path.replace("images", "labels")
-            label_path = label_path.rsplit(".", 1)[0] + ".txt"
+    # Max F1 at IoU=0.50, area='all', maxDets=last
+    p_at_r = p_all[0]  # (101,)
+    valid = p_at_r > -1
+    if valid.any():
+        r_vals = recall_thresholds[valid]
+        p_vals = p_at_r[valid]
+        f1_vals = np.where(
+            (p_vals + r_vals) > 0,
+            2 * p_vals * r_vals / (p_vals + r_vals),
+            0.0,
+        )
+        best_idx = int(np.argmax(f1_vals))
+        best_p, best_r, best_f1 = float(p_vals[best_idx]), float(r_vals[best_idx]), float(f1_vals[best_idx])
+    else:
+        best_p = best_r = best_f1 = 0.0
 
-            if os.path.exists(label_path):
-                with open(label_path, "r") as f:
-                    for line in f:
-                        parts = line.strip().split()
-                        if len(parts) < 5:
-                            continue
-                        cls_id = int(parts[0])
-                        cx, cy, bw, bh = map(float, parts[1:5])
-                        # Normalized xyxy
-                        x1 = cx - bw / 2
-                        y1 = cy - bh / 2
-                        x2 = cx + bw / 2
-                        y2 = cy + bh / 2
-                        gt_boxes_norm.append([x1, y1, x2, y2])
-                        gt_labels.append(cls_id)
-
-        if gt_boxes_norm:
-            t_boxes = torch.tensor(gt_boxes_norm, dtype=torch.float32)
-            t_labels = torch.tensor(gt_labels, dtype=torch.long)
-        else:
-            t_boxes = torch.zeros((0, 4), dtype=torch.float32)
-            t_labels = torch.zeros((0,), dtype=torch.long)
-
-        # Predictions for this image
-        img_preds = preds_by_img.get(img_id, [])
-        if img_preds:
-            p_scores = torch.tensor([p["score"] for p in img_preds], dtype=torch.float32)
-            p_labels = torch.tensor([p["category_id"] for p in img_preds], dtype=torch.long)
-            # COCO bbox [x,y,w,h] pixel → normalized xyxy
-            p_boxes = []
-            for p in img_preds:
-                bx, by, bw, bh = p["bbox"]
-                p_boxes.append([bx / W, by / H, (bx + bw) / W, (by + bh) / H])
-            p_boxes = torch.tensor(p_boxes, dtype=torch.float32)
-        else:
-            p_scores = torch.zeros((0,), dtype=torch.float32)
-            p_labels = torch.zeros((0,), dtype=torch.long)
-            p_boxes = torch.zeros((0, 4), dtype=torch.float32)
-
-        cached.append({
-            "obj_scores": p_scores,
-            "obj_labels": p_labels,
-            "p_boxes_xyxy": p_boxes,
-            "t_boxes_xyxy": t_boxes,
-            "t_labels": t_labels,
-        })
-
-    return cached
+    return map50_95, map50, best_p, best_r, best_f1
 
 
 # ──────────────────────────────────────────────────────────────
 # Step 4: Evaluate a single model
 # ──────────────────────────────────────────────────────────────
-def evaluate_model(model_info, coco_gt, gt_dir, conf_threshold, iou_threshold):
+def evaluate_model(model_info, coco_gt, max_dets):
     """
-    Evaluate one model's predictions.
+    Evaluate one model's predictions using COCOeval.
 
-    Returns dict with: name, mAP50_95, mAP50, precision, recall, f1
+    Returns dict with: name, mAP50_95, mAP50, precision, recall, f1, num_preds
     """
     with open(model_info["results_path"], "r") as f:
         predictions = json.load(f)
-    with open(model_info["images_path"], "r") as f:
-        images_info = json.load(f)
 
-    # --- COCOeval for mAP ---
-    if predictions:
-        # Strip 'id' field if present (loadRes expects image_id, category_id, bbox, score)
-        clean_preds = []
-        for p in predictions:
-            clean_preds.append({
-                "image_id": p["image_id"],
-                "category_id": p["category_id"],
-                "bbox": p["bbox"],
-                "score": p["score"],
-            })
-        coco_dt = coco_gt.loadRes(clean_preds)
-        coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
-        coco_eval.evaluate()
-        coco_eval.accumulate()
-        coco_eval.summarize()
-        map50_95 = coco_eval.stats[0]  # AP @ IoU=0.50:0.95
-        map50 = coco_eval.stats[1]     # AP @ IoU=0.50
-    else:
-        map50_95 = 0.0
-        map50 = 0.0
+    if not predictions:
+        return {
+            "name": model_info["name"], "mAP50_95": 0.0, "mAP50": 0.0,
+            "precision": 0.0, "recall": 0.0, "f1": 0.0, "num_preds": 0,
+        }
 
-    # --- P/R/F1 via threshold-based matching ---
-    cached = build_cached_predictions(predictions, images_info, gt_dir)
-    precision, recall, f1 = compute_precision_recall_f1(
-        cached, iou_threshold=iou_threshold, conf_threshold=conf_threshold
-    )
+    # Strip 'id' field — loadRes expects image_id, category_id, bbox, score only
+    clean = [{
+        "image_id": p["image_id"], "category_id": p["category_id"],
+        "bbox": p["bbox"], "score": p["score"],
+    } for p in predictions]
+
+    coco_dt = coco_gt.loadRes(clean)
+    coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
+    coco_eval.params.maxDets = max_dets
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+
+    map50_95, map50, precision, recall, f1 = extract_metrics_from_cocoeval(coco_eval)
 
     return {
         "name": model_info["name"],
@@ -307,6 +218,7 @@ def evaluate_model(model_info, coco_gt, gt_dir, conf_threshold, iou_threshold):
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
+        "num_preds": len(predictions),
     }
 
 
@@ -315,15 +227,14 @@ def evaluate_model(model_info, coco_gt, gt_dir, conf_threshold, iou_threshold):
 # ──────────────────────────────────────────────────────────────
 def print_table(rows):
     """Print a formatted comparison table."""
-    headers = ["Model", "mAP50-95", "mAP50", "Precision", "Recall", "F1"]
+    headers = ["Model", "mAP50-95", "mAP50", "Precision", "Recall", "F1", "Preds"]
     col_widths = [
         max(len(headers[0]), max(len(r["name"]) for r in rows)) + 2,
-        10, 8, 11, 8, 8,
+        10, 8, 11, 8, 8, 8,
     ]
 
     def sep_line(left, mid, right, fill="─"):
-        parts = [fill * w for w in col_widths]
-        return left + mid.join(parts) + right
+        return left + mid.join(fill * w for w in col_widths) + right
 
     def row_line(vals):
         cells = []
@@ -346,6 +257,7 @@ def print_table(rows):
             f"{r['precision']:.4f}",
             f"{r['recall']:.4f}",
             f"{r['f1']:.4f}",
+            str(r["num_preds"]),
         ]))
     print(sep_line("└", "┴", "┘"))
     print()
@@ -355,11 +267,11 @@ def write_csv(rows, output_path):
     """Write benchmark results to CSV."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["model", "mAP50_95", "mAP50", "precision", "recall", "f1"])
+        writer.writerow(["model", "mAP50_95", "mAP50", "precision", "recall", "f1", "num_preds"])
         for r in rows:
             writer.writerow([
                 r["name"], r["mAP50_95"], r["mAP50"],
-                r["precision"], r["recall"], r["f1"],
+                r["precision"], r["recall"], r["f1"], r["num_preds"],
             ])
 
 
@@ -367,13 +279,28 @@ def write_csv(rows, output_path):
 # Main
 # ──────────────────────────────────────────────────────────────
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(
+        description="Benchmark object detection models against YOLO GT using COCOeval"
+    )
+    parser.add_argument("--results_dir", default="val_inference_results",
+                        help="Directory with model subfolders (default: val_inference_results)")
+    parser.add_argument("--max_dets", type=int, default=300,
+                        help="Max detections per image for COCOeval (default: 300)")
+    parser.add_argument("--output_csv", default="benchmark_summary.csv",
+                        help="Path for CSV output (default: benchmark_summary.csv)")
+    args = parser.parse_args()
+
+    # Derive GT labels path from data config
+    data_cfg = Config.load_data_config()
+    labels_dir = os.path.join(
+        data_cfg["base_path"],
+        data_cfg["val_path"].replace("images", "labels"),
+    )
 
     # 1. Discover models
     models = discover_models(args.results_dir)
     if not models:
-        print(f"No valid prediction files found in {args.results_dir}")
-        print("Expected: <name>.json with companion <name>_images.json and <name>_categories.json")
+        print(f"No model subfolders found in {args.results_dir}")
         return
     print(f"Found {len(models)} model(s): {', '.join(m['name'] for m in models)}")
 
@@ -384,23 +311,19 @@ def main():
         categories_info = json.load(f)
 
     print(f"Building COCO ground truth from {len(images_info)} images...")
-    coco_gt = build_coco_gt(images_info, categories_info, args.gt_dir)
+    coco_gt = build_coco_gt(images_info, categories_info, labels_dir)
     print(f"  GT annotations: {len(coco_gt.dataset['annotations'])}")
 
     # 3. Evaluate each model
+    max_dets = [1, 10, args.max_dets]
     results = []
     for model_info in models:
         print(f"\nEvaluating: {model_info['name']}")
-        row = evaluate_model(
-            model_info, coco_gt, args.gt_dir,
-            args.conf_threshold, args.iou_threshold,
-        )
+        row = evaluate_model(model_info, coco_gt, max_dets)
         results.append(row)
 
-    # 4. Sort by mAP50-95 descending
+    # 4. Sort by mAP50-95 descending and output
     results.sort(key=lambda r: r["mAP50_95"], reverse=True)
-
-    # 5. Output
     print_table(results)
     write_csv(results, args.output_csv)
     print(f"Saved to: {args.output_csv}")
