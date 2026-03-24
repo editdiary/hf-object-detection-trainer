@@ -284,6 +284,8 @@ def main():
     )
     parser.add_argument("--results_dir", default="val_inference_results",
                         help="Directory with model subfolders (default: val_inference_results)")
+    parser.add_argument("--split", choices=["val", "test"], default="val",
+                        help="Which data split to evaluate against: val or test (default: val)")
     parser.add_argument("--max_dets", type=int, default=300,
                         help="Max detections per image for COCOeval (default: 300)")
     parser.add_argument("--output_csv", default="benchmark_summary.csv",
@@ -292,9 +294,14 @@ def main():
 
     # Derive GT labels path from data config
     data_cfg = Config.load_data_config()
+    split_key = "val_path" if args.split == "val" else "test_path"
+    split_path = data_cfg.get(split_key)
+    if not split_path:
+        print(f"Error: '{split_key}' is not defined in data.yaml")
+        return
     labels_dir = os.path.join(
         data_cfg["base_path"],
-        data_cfg["val_path"].replace("images", "labels"),
+        split_path.replace("images", "labels"),
     )
 
     # 1. Discover models

@@ -21,4 +21,6 @@ __pycache__/
 real_runs/
 temp_runs/
 val_inference_results/
+test_inference_results/
 same_seed_runs/
+onnx_models/

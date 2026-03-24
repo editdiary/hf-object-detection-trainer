@@ -26,7 +26,7 @@ SEEDS = [42, 42, 42, 42, 42]
 COMMON_PARAMS = {
     "BATCH_SIZE": 16,
     "EPOCHS": 150,
-    "LEARNING_RATE": 1e-4,
+    "LEARNING_RATE": 1e-5,
     "WEIGHT_DECAY": 1e-4,
     "OPTIM": "adamw_torch",
     "LR_SCHEDULER_TYPE": "cosine",
@@ -96,6 +96,7 @@ MODEL_CONFIGS = {
         project_name="real_detr_r50",
         experiment_name="repeat-exp",
         overrides={
+            "EPOCHS": 200,
             "BATCH_SIZE": 8,        # DETR은 메모리 사용량이 크므로 배치 축소
             "IMAGE_SIZE": 800,      # DETR 기본 입력 크기 800x800
         },
@@ -175,7 +176,7 @@ def main():
 
     # 실행할 모델 목록 결정
     if args.model == "all":
-        models_to_run = ["r18", "r34", "r50", "r101"]
+        models_to_run = ["r18", "r34", "r50", "r101", "detr"]
     else:
         models_to_run = [args.model]
 

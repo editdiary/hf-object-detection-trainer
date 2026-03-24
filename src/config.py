@@ -22,9 +22,9 @@ class Config:
     MODEL_CHECKPOINT = "PekingU/rtdetr_v2_r18vd"
 
     # 실험 결과 저장 경로: {BASE_SAVE_DIR}/{PROJECT_NAME}/{EXPERIMENT_NAME}{N}/
-    BASE_SAVE_DIR = "./same_seed_runs"
+    BASE_SAVE_DIR = "./same_seed_test"
     PROJECT_NAME = "rtdetr_r18"
-    EXPERIMENT_NAME = "full-dataset_check"
+    EXPERIMENT_NAME = "repeat-exp_seed42_"
 
     # 입력 이미지 크기 (증강 파이프라인의 RandomResizedCrop에서 사용)
     IMAGE_SIZE = 640
@@ -73,7 +73,7 @@ class Config:
     LR_SCHEDULER_TYPE = "cosine"
     NUM_WORKERS = 12
     MAX_GRAD_NORM = 0.1
-
+    
     # =========================================================
     # 4. Saving & Logging
     # =========================================================
